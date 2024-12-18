@@ -4,22 +4,47 @@
 #include <errno.h> 
 #include <stdio.h> 
 #include <stdlib.h>
+#include <string.h> 
 #include <sys/ioctl.h>
 #include <termios.h> 
 #include <unistd.h>   
 /*** defines ***/ 
 
 #define CTRL_KEY(k) ((k) & 0x1f)
+#define EDITOR_VERSION "0.0.1"
+#define ABUF_INIT {NULL, 0}
 
 /*** data ***/ 
 
 struct editorConfig { 
+    int cursor_x, cursor_y;
     int screenrows;
     int screencols;
     struct termios orig_termios;
 }; 
 
+
 struct editorConfig e_config;
+
+/*** Append Buffer Structure ***/
+
+struct abuf {
+    char *c;
+    int len;
+};
+
+void append(struct abuf *in_buffer, const char *s, int len) { 
+    char *new_buffer = realloc(in_buffer->c, in_buffer->len + len);
+    if(new_buffer == NULL) 
+        return;
+    memcpy(&new_buffer[in_buffer->len], s, len);
+    in_buffer->c = new_buffer;
+    in_buffer->len += len;
+} 
+
+void buffer_free(struct abuf *buffer) { 
+    free(buffer->c); 
+} 
 
 /*** terminal display ***/ 
 
@@ -120,27 +145,52 @@ void editor_process_keypress(void) {
 
 /*** Output ***/ 
 
-void editor_draw_rows(void) { 
+void editor_draw_rows(struct abuf* buffer) { 
     int y;
     for(y = 0; y < e_config.screenrows; y++) { 
-        write(STDOUT_FILENO, "~", 1);
+        if(y == e_config.screenrows / 3) { 
+            char welcome[80];
+            int welcome_len = snprintf(welcome, sizeof(welcome), 
+                    "CEditor -version %s", EDITOR_VERSION);
+            if(welcome_len > e_config.screencols) { 
+                welcome_len = e_config.screencols;
+            } 
+            int padding = (e_config.screencols - welcome_len) / 2;
+            if(padding) { 
+                append(buffer, "~", 1);
+                padding--;
+            } 
+            while(padding--){ 
+                append(buffer, " ", 1);
+            } 
+            append(buffer, welcome, welcome_len);
+        } else{ 
+            append(buffer, "~", 1);
+        } 
+        append(buffer, "\x1b[K", 3); 
         if(y < e_config.screenrows - 1) {  
-            write(STDOUT_FILENO, "\r\n", 2);
+            append(buffer, "\r\n", 2);
         } 
     } 
 } 
 
 void editor_clear_screen(void) { 
-    write(STDOUT_FILENO, "\x1b[2J", 4);
-    write(STDOUT_FILENO, "\x1b[H", 3);
-
-    editor_draw_rows();
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    struct abuf buffer = ABUF_INIT;
+    // hides the cursor 
+    append(&buffer, "\x1b[25l", 6);
+    append(&buffer, "\x1b[H", 3);
+    editor_draw_rows(&buffer);
+    append(&buffer, "\x1b[H", 3);
+    append(&buffer, "\x1b[?25h", 6);
+    write(STDOUT_FILENO, buffer.c, buffer.len);
+    buffer_free(&buffer);
 }
 
 /*** init ***/
 
 void init_editor(void) { 
+    e_config.cursor_x = 0;
+    e_config.cursor_y = 0;
     if(get_window_size(&e_config.screenrows, &e_config.screencols) == -1) { 
         die("Failed to get window size");
     }
